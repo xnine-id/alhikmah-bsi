@@ -26,12 +26,21 @@ class BsiService implements BsiInterface
     {
         $data = $clientKey . "|" . $timestamp;
 
+        logger()->info('data token: ' . $data);
+        logger()->info('signature token: ' . $signature);
+        logger()->info('timestamp token: ' . $timestamp);
+        logger()->info('clientKey token: ' . $clientKey);
+        logger()->info('this->CLIENT_SECRET: ' . $this->CLIENT_SECRET);
+        logger()->info('this->BPI_PUBLIC_KEY: ' . $this->BPI_PUBLIC_KEY);
+
         $publicKey = openssl_pkey_get_public($this->BPI_PUBLIC_KEY);
 
         $verified = 0;
         if ($publicKey && $signature) {
             $verified = openssl_verify($data, base64_decode($signature), $publicKey, OPENSSL_ALGO_SHA256);
         }
+
+        logger()->info('verified token: ' . $verified);
 
         if ($verified == 1) {
             try {
@@ -51,21 +60,28 @@ class BsiService implements BsiInterface
         }
     }
 
-    public function inquiry(array $headers, array $payload): array
+    public function inquiry(array $headers, array $payload, string $rawBody = ''): array
     {
-        $signature = $headers['X-SIGNATURE'][0] ?? '';
-        $partnerId = $headers['X-PARTNER-ID'][0] ?? '';
-        $externalId = $headers['X-EXTERNAL-ID'][0] ?? '';
-        $authorization = $headers['Authorization'][0] ?? '';
-        $timestamp = $headers['X-TIMESTAMP'][0] ?? '';
-        $endpointUrl = $headers['Endpoint-Url'][0] ?? '';
+        $signature = $headers['x-signature'][0] ?? '';
+        $partnerId = $headers['x-partner-id'][0] ?? '';
+        $externalId = $headers['x-external-id'][0] ?? '';
+        $authorization = $headers['authorization'][0] ?? '';
+        $timestamp = $headers['x-timestamp'][0] ?? '';
+        $endpointUrl = $headers['endpoint-url'][0] ?? '';
 
         $tmpAccessToken = explode(" ", $authorization);
         $accessToken = $tmpAccessToken[1] ?? '';
 
-        $stringToSign = json_encode($payload);
+        // Gunakan rawBody dari request agar identik byte-for-byte dengan BSI
+        $stringToSign = $rawBody !== '' ? $rawBody : json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        
         $signatureLocal = $this->generateBase64SignatureMessage('POST', $endpointUrl, $stringToSign, $accessToken, $timestamp, $this->CLIENT_SECRET);
 
+        Log::info('endpointUrl: ' . $endpointUrl);
+        Log::info('stringToSign: ' . $stringToSign);
+        Log::info('accessToken: ' . $accessToken);
+        Log::info('timestamp: ' . $timestamp);
+        Log::info('Signature: ' . $signature);
         Log::info('Local Signature: ' . $signatureLocal);
 
         if ($signatureLocal != $signature) {
@@ -130,19 +146,21 @@ class BsiService implements BsiInterface
         ];
     }
 
-    public function payment(array $headers, array $payload): array
+    public function payment(array $headers, array $payload, string $rawBody = ''): array
     {
-        $signature = $headers['X-SIGNATURE'][0] ?? '';
-        $partnerId = $headers['X-PARTNER-ID'][0] ?? '';
-        $externalId = $headers['X-EXTERNAL-ID'][0] ?? '';
-        $authorization = $headers['Authorization'][0] ?? '';
-        $timestamp = $headers['X-TIMESTAMP'][0] ?? '';
-        $endpointUrl = $headers['Endpoint-Url'][0] ?? '';
+        $signature = $headers['x-signature'][0] ?? '';
+        $partnerId = $headers['x-partner-id'][0] ?? '';
+        $externalId = $headers['x-external-id'][0] ?? '';
+        $authorization = $headers['authorization'][0] ?? '';
+        $timestamp = $headers['x-timestamp'][0] ?? '';
+        $endpointUrl = $headers['endpoint-url'][0] ?? '';
 
         $tmpAccessToken = explode(" ", $authorization);
         $accessToken = $tmpAccessToken[1] ?? '';
 
-        $stringToSign = json_encode($payload);
+        // Gunakan rawBody dari request agar identik byte-for-byte dengan BSI
+        $stringToSign = $rawBody !== '' ? $rawBody : json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        
         $signatureLocal = $this->generateBase64SignatureMessage('POST', $endpointUrl, $stringToSign, $accessToken, $timestamp, $this->CLIENT_SECRET);
 
         Log::info('Local Signature: ' . $signatureLocal);
@@ -182,7 +200,7 @@ class BsiService implements BsiInterface
         $paymentRequestId = $payload['paymentRequestId'] ?? $externalId;
         $trxDateTime = $payload['trxDateTime'] ?? '';
         $paidAmount = $payload['paidAmount'];
-        $paidAmountValue = $paidAmount['value'] ?? 0;
+        $paidAmountValue = $paidAmount['value'] ?? "0";
 
         try {
             [$siswa, $tagihanBulanIni] = $this->verifyCustomerNo($customerNo);
@@ -204,7 +222,7 @@ class BsiService implements BsiInterface
 
         // Update status pembayaran di database
         $tagihanBulanIni->CLOSED = true;
-        $tagihanBulanIni->TGL_BAYAR = now();
+        $tagihanBulanIni->TGL_BYR = now();
         $tagihanBulanIni->save();
 
         return [
@@ -256,23 +274,25 @@ class BsiService implements BsiInterface
             ->where('ID_TA', $idTa)
             ->where('BULAN', $currentMonth)
             ->where(function ($query) use ($currentYear) {
-                $query->whereNull('TGL_BAYAR')
-                    ->orWhereYear('TGL_BAYAR', $currentYear);
+                $query->whereNull('TGL_BYR')
+                    ->orWhereYear('TGL_BYR', $currentYear);
             })
             ->first();
 
         if (!$tagihanBulanIni) {
             // Tagihan belum dibuat/tidak ada
+            $lastTransId = TBulan::latest('ID_TRANSBULAN')->first('ID_TRANSBULAN')?->ID_TRANSBULAN ?? 0;
             $tagihanBulanIni = TBulan::create([
+                'ID_TRANSBULAN' => $lastTransId + 1,
                 'ID_TA' => $idTa,
                 'ID_SISWA' => $siswa->ID_SISWA,
-                'TGL_BAYAR' => now(),
+                'TGL_BYR' => now(),
                 'PETUGAS' => 'BSI',
                 'BULAN' => $currentMonth,
-                'SPP' => MTarif::where('ID_TA', $idTa)
+                'SPP' => (string) (MTarif::where('ID_TA', $idTa)
                     ->where('JENJANG', $siswa->JENJANG)
                     ->where('tingkat', $tingkat)
-                    ->first()?->SPP ?? 0,
+                    ->first()?->SPP ?? 0),
                 'NOTES' => 'Testing BSI',
                 'CLOSED' => false
             ]);
@@ -293,7 +313,7 @@ class BsiService implements BsiInterface
         }
 
         // for testing
-        $tagihanBulanIni->SPP = 1;
+        $tagihanBulanIni->SPP = "1";
 
         return [$siswa, $tagihanBulanIni];
     }

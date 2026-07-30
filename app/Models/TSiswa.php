@@ -10,6 +10,8 @@ class TSiswa extends Model
 
     protected $primaryKey = 'ID_SISWAKELAS';
 
+    public $timestamps = false;
+
     protected $fillable = [];
  
     public function siswa()

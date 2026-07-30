@@ -10,6 +10,8 @@ class MSiswa extends Model
 
     protected $primaryKey = 'ID_SISWA';
 
+    public $timestamps = false;
+
     protected $fillable = [];
  
     public function bulans()

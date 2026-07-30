@@ -10,5 +10,7 @@ class MTarif extends Model
 
     protected $primaryKey = 'ID_TARIF';
 
+    public $timestamps = false;
+
     protected $fillable = [];
 }

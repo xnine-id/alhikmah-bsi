@@ -10,5 +10,7 @@ class MTahunAjaran extends Model
 
     protected $primaryKey = 'ID_TA';
 
+    public $timestamps = false;
+
     protected $fillable = [];
 }

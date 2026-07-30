@@ -10,11 +10,13 @@ class TBulan extends Model
 
     protected $primaryKey = 'ID_TRANSBULAN';
 
+    public $timestamps = false;
+
     protected $fillable = [
         'ID_TRANSBULAN',
         'ID_TA',
         'ID_SISWA',
-        'TGL_BAYAR',
+        'TGL_BYR',
         'PETUGAS',
         'BULAN',
         'SPP',
@@ -23,7 +25,7 @@ class TBulan extends Model
     ];
 
     protected $casts = [
-        'TGL_BAYAR' => 'date',
+        'TGL_BYR' => 'date',
         'CLOSED' => 'boolean',
     ];
 

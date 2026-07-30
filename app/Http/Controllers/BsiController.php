@@ -18,12 +18,12 @@ class BsiController extends Controller
         Log::info('AUTH Headers: ', $request->headers->all());
 
         try {
-            $signature = $request->header('X-SIGNATURE', '');
-            $clientKey = $request->header('X-CLIENT-KEY', '');
-            $timestamp = $request->header('X-TIMESTAMP', '');
+            $signature = $request->header('x-signature') ?? '';
+            $clientKey = $request->header('x-client-key') ?? '';
+            $timestamp = $request->header('x-timestamp') ?? '';
 
             $result = $this->bsiService->authenticate($signature, $clientKey, $timestamp);
-
+            
             Log::info("AUTH END RESPONSE :", $result);
             return response()->json($result, 200);
         } catch (Exception $e) {
@@ -32,7 +32,7 @@ class BsiController extends Controller
             $output = ["responseCode" => $responseCode, "responseMessage" => $responseMessage];
 
             Log::info("AUTH END RESPONSE (ERROR):", $output);
-
+            
             $statusCode = substr((string) $responseCode, 0, 3);
             if (!is_numeric($statusCode) || $statusCode < 100 || $statusCode > 599) {
                 $statusCode = 500;
@@ -48,7 +48,7 @@ class BsiController extends Controller
         Log::info('INQUIRY Headers: ', $request->headers->all());
 
         try {
-            $result = $this->bsiService->inquiry($request->headers->all(), $request->json()->all());
+            $result = $this->bsiService->inquiry($request->headers->all(), $request->json()->all(), $request->getContent());
             Log::info("INQUIRY END RESPONSE :", $result);
             return response()->json($result, 200);
         } catch (Exception $e) {
@@ -73,7 +73,7 @@ class BsiController extends Controller
         Log::info('PAYMENT Headers: ', $request->headers->all());
 
         try {
-            $result = $this->bsiService->payment($request->headers->all(), $request->json()->all());
+            $result = $this->bsiService->payment($request->headers->all(), $request->json()->all(), $request->getContent());
             return response()->json($result, 200);
         } catch (Exception $e) {
             $responseCode = $e->getCode() ?: BsiResponseCode::PAYMENT_GENERAL_ERROR;
