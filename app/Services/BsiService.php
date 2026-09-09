@@ -16,10 +16,13 @@ class BsiService implements BsiInterface
     private $CLIENT_SECRET;
     private $BPI_PUBLIC_KEY;
 
-    public function __construct()
+    private $billerId;
+
+    public function __construct(string $bilerId)
     {
         $this->CLIENT_SECRET = config('services.bsi.client_secret');
         $this->BPI_PUBLIC_KEY = config('services.bsi.public_key');
+        $this->billerId = $bilerId;
     }
 
     public function authenticate(string $signature, string $clientKey, string $timestamp): array
@@ -104,6 +107,10 @@ class BsiService implements BsiInterface
             throw new Exception(BsiResponseCode::getMessage(BsiResponseCode::INQUIRY_INVALID_FIELD_FORMAT), BsiResponseCode::INQUIRY_INVALID_FIELD_FORMAT);
         }
 
+        if (trim($payload['partnerServiceId']) !== trim($this->billerId)) {
+            throw new Exception(BsiResponseCode::getMessage(BsiResponseCode::INQUIRY_INVALID_FIELD_FORMAT), BsiResponseCode::INQUIRY_INVALID_FIELD_FORMAT);
+        }
+
         if (!preg_match('/^[0-9]{1,12}$/', $payload['customerNo'])) {
             throw new Exception(BsiResponseCode::getMessage(BsiResponseCode::INQUIRY_INVALID_FIELD_FORMAT), BsiResponseCode::INQUIRY_INVALID_FIELD_FORMAT);
         }
@@ -120,10 +127,6 @@ class BsiService implements BsiInterface
 
         [$siswa, $tagihanBulanIni] = $this->verifyCustomerNo($customerNo);
 
-        if ($amountValue && $tagihanBulanIni->SPP != $amountValue) {
-            throw new Exception(BsiResponseCode::getMessage(BsiResponseCode::INQUIRY_BILL_NOT_FOUND), BsiResponseCode::INQUIRY_BILL_NOT_FOUND);
-        }
-
         return [
             "responseCode" => BsiResponseCode::INQUIRY_SUCCESS,
             "responseMessage" => BsiResponseCode::getMessage(BsiResponseCode::INQUIRY_SUCCESS),
@@ -139,14 +142,12 @@ class BsiService implements BsiInterface
                     ["label" => "TAHUN AJARAN", "value" => $siswa->history[0]?->tahunAjaran->TA_CODE ?? $siswa->tahunAjaran->TA_CODE],
                     ["label" => "TINGKAT", "value" => $siswa->history[0]?->TINGKAT ?? $siswa->TINGKAT],
                 ],
-                "billDetail" => [
-                    ["label" => "SPP", "value" => $tagihanBulanIni->SPP],
-                ],
+                "billDetail" => $tagihanBulanIni->billDetails,
             ]
         ];
     }
 
-    public function payment(array $headers, array $payload, string $rawBody = ''): array
+    public function payment(array $headers, array $payload, string $rawBody = '', $isClosePayment = true): array
     {
         $signature = $headers['x-signature'][0] ?? '';
         $partnerId = $headers['x-partner-id'][0] ?? '';
@@ -175,6 +176,7 @@ class BsiService implements BsiInterface
 
         // Validasi Payload Payment
         $requiredPaymentFields = ['partnerServiceId', 'customerNo', 'trxDateTime', 'paidAmount', 'virtualAccountNo', 'paymentRequestId', 'sourceBankCode'];
+
         foreach ($requiredPaymentFields as $field) {
             if (!isset($payload[$field]) || $payload[$field] === '') {
                 throw new Exception(BsiResponseCode::getMessage(BsiResponseCode::PAYMENT_INVALID_MANDATORY_FIELD, ['xyz' => $field]), BsiResponseCode::PAYMENT_INVALID_MANDATORY_FIELD);
@@ -182,6 +184,10 @@ class BsiService implements BsiInterface
         }
 
         if (!preg_match('/^[0-9\s]{1,8}$/', $payload['partnerServiceId'])) {
+            throw new Exception(BsiResponseCode::getMessage(BsiResponseCode::PAYMENT_INVALID_FIELD_FORMAT), BsiResponseCode::PAYMENT_INVALID_FIELD_FORMAT);
+        }
+
+        if (trim($payload['partnerServiceId']) !== trim($this->billerId)) {
             throw new Exception(BsiResponseCode::getMessage(BsiResponseCode::PAYMENT_INVALID_FIELD_FORMAT), BsiResponseCode::PAYMENT_INVALID_FIELD_FORMAT);
         }
 
@@ -216,14 +222,37 @@ class BsiService implements BsiInterface
             throw new Exception(BsiResponseCode::getMessage($newCode), $newCode);
         }
 
-        if ($paidAmountValue != $tagihanBulanIni->SPP) {
+        // Validate Amount
+        if ($isClosePayment && (int)$paidAmountValue != (int)$tagihanBulanIni->SPP) {
             throw new Exception(BsiResponseCode::getMessage(BsiResponseCode::PAYMENT_AMOUNT_NOT_VALID), BsiResponseCode::PAYMENT_AMOUNT_NOT_VALID);
         }
 
-        // Update status pembayaran di database
-        $tagihanBulanIni->CLOSED = true;
-        $tagihanBulanIni->TGL_BYR = now();
-        $tagihanBulanIni->save();
+        if(!$isClosePayment) {
+            if ((int)$paidAmountValue > (int)$tagihanBulanIni->SPP) {
+                throw new Exception(BsiResponseCode::getMessage(BsiResponseCode::PAYMENT_AMOUNT_NOT_VALID), BsiResponseCode::PAYMENT_AMOUNT_NOT_VALID);
+            }
+            
+            $sppPerBulan = (int) $tagihanBulanIni->sppPerBulan;
+            if ($sppPerBulan > 0 && (int)$paidAmountValue % $sppPerBulan !== 0) {
+                throw new Exception(BsiResponseCode::getMessage(BsiResponseCode::PAYMENT_AMOUNT_NOT_VALID), BsiResponseCode::PAYMENT_AMOUNT_NOT_VALID);
+            }
+        }
+
+        // Tiap cicilan/pembayaran masukin row baru ke TBulan
+        $lastTransId = \App\Models\TBulan::latest('ID_TRANSBULAN')->first('ID_TRANSBULAN')?->ID_TRANSBULAN ?? 0;
+        $tagihanBaru = \App\Models\TBulan::create([
+            'ID_TRANSBULAN' => $lastTransId + 1,
+            'ID_TA' => $tagihanBulanIni->ID_TA,
+            'ID_SISWA' => $siswa->ID_SISWA,
+            'TGL_BYR' => now(),
+            'PETUGAS' => 'BSI',
+            'BULAN' => now()->format('n'),
+            'SPP' => (string)$paidAmountValue,
+            'NOTES' => 'BSI Payment',
+            'CLOSED' => true
+        ]);
+        
+        $tagihanBulanIni = $tagihanBaru;
 
         return [
             "responseCode" => BsiResponseCode::PAYMENT_SUCCESS,
@@ -240,9 +269,7 @@ class BsiService implements BsiInterface
                     ["label" => "TAHUN AJARAN", "value" => $siswa->history[0]?->tahunAjaran->TA_CODE ?? $siswa->tahunAjaran->TA_CODE],
                     ["label" => "TINGKAT", "value" => $siswa->history[0]?->TINGKAT ?? $siswa->TINGKAT],
                 ],
-                "billDetail" => [
-                    ["label" => "SPP", "value" => $tagihanBulanIni->SPP],
-                ],
+                "billDetail" => $tagihanBulanIni->billDetails,
                 "referenceNo" => (string)$tagihanBulanIni->ID_TRANSBULAN,
             ]
         ];
@@ -270,50 +297,79 @@ class BsiService implements BsiInterface
         $currentMonth = now()->format('n');
         $currentYear = now()->format('Y');
 
-        $tagihanBulanIni = TBulan::where('ID_SISWA', $siswa->ID_SISWA)
-            ->where('ID_TA', $idTa)
-            ->where('BULAN', $currentMonth)
-            ->where(function ($query) use ($currentYear) {
-                $query->whereNull('TGL_BYR')
-                    ->orWhereYear('TGL_BYR', $currentYear);
-            })
+        $tarif = MTarif::where('ID_TA', $idTa)
+            ->where('JENJANG', $siswa->JENJANG)
+            ->where('tingkat', $tingkat)
             ->first();
+            
+        $sppPerBulan = $tarif ? (int)$tarif->SPP : 0;
+        // for testing (if you want to force it to 1, uncomment below, otherwise use $remainingSPP)
+        $sppPerBulan = 10000;
 
-        if (!$tagihanBulanIni) {
-            // Tagihan belum dibuat/tidak ada
-            $lastTransId = TBulan::latest('ID_TRANSBULAN')->first('ID_TRANSBULAN')?->ID_TRANSBULAN ?? 0;
-            $tagihanBulanIni = TBulan::create([
-                'ID_TRANSBULAN' => $lastTransId + 1,
-                'ID_TA' => $idTa,
-                'ID_SISWA' => $siswa->ID_SISWA,
-                'TGL_BYR' => now(),
-                'PETUGAS' => 'BSI',
-                'BULAN' => $currentMonth,
-                'SPP' => (string) (MTarif::where('ID_TA', $idTa)
-                    ->where('JENJANG', $siswa->JENJANG)
-                    ->where('tingkat', $tingkat)
-                    ->first()?->SPP ?? 0),
-                'NOTES' => 'Testing BSI',
-                'CLOSED' => false
-            ]);
-            // throw new Exception(BsiResponseCode::getMessage(BsiResponseCode::INQUIRY_BILL_NOT_FOUND), BsiResponseCode::INQUIRY_BILL_NOT_FOUND);
+        // Hitung berapa bulan yang sudah berlalu sejak awal tahun ajaran (Asumsi mulai bulan Juli = 7)
+        $currentMonthInt = (int) $currentMonth;
+        $monthsPassed = $currentMonthInt >= 7 ? $currentMonthInt - 7 + 1 : $currentMonthInt + 6;
+        
+        $totalTarif = $sppPerBulan * $monthsPassed;
 
-            if (!$tagihanBulanIni) {
-                throw new Exception(BsiResponseCode::getMessage(BsiResponseCode::INQUIRY_DB_ERROR), BsiResponseCode::INQUIRY_DB_ERROR);
-            }
+        $totalPaid = TBulan::where('ID_SISWA', $siswa->ID_SISWA)
+            ->where('ID_TA', $idTa)
+            ->where('CLOSED', true)
+            ->get()
+            ->sum(function($item) {
+                return (int)$item->SPP;
+            });
 
-            if ($tagihanBulanIni->SPP == 0) {
-                throw new Exception(BsiResponseCode::getMessage(BsiResponseCode::INQUIRY_INVALID_DATA), BsiResponseCode::INQUIRY_INVALID_DATA);
-            }
-        }
+        logger()->info('test-bsi-amount', [
+            'sppPerBulan' => $sppPerBulan,
+            'monthsPassed' => $monthsPassed,
+            'totalTarif' => $totalTarif,
+            'totalPaid' => $totalPaid,
+        ]);
 
-        if ($tagihanBulanIni->CLOSED == true) {
-            // Tagihan sudah dibayar
+        $remainingSPP = $totalTarif - $totalPaid;
+
+        if ($remainingSPP <= 0) {
             throw new Exception(BsiResponseCode::getMessage(BsiResponseCode::INQUIRY_BILL_ALREADY_PAID), BsiResponseCode::INQUIRY_BILL_ALREADY_PAID);
         }
 
-        // for testing
-        $tagihanBulanIni->SPP = "1";
+        $monthNames = [
+            1 => 'Januari', 2 => 'Februari', 3 => 'Maret', 4 => 'April',
+            5 => 'Mei', 6 => 'Juni', 7 => 'Juli', 8 => 'Agustus',
+            9 => 'September', 10 => 'Oktober', 11 => 'November', 12 => 'Desember'
+        ];
+
+        $billDetails = [];
+        $remainingPaid = $totalPaid;
+
+        for ($i = 0; $i < $monthsPassed; $i++) {
+            $m = 7 + $i;
+            if ($m > 12) {
+                $m -= 12;
+            }
+            
+            $monthName = $monthNames[$m];
+            
+            if ($remainingPaid >= $sppPerBulan) {
+                $remainingPaid -= $sppPerBulan;
+                // Fully paid for this month, skip
+            } else {
+                $unpaidForThisMonth = $sppPerBulan - $remainingPaid;
+                $remainingPaid = 0; // consumed
+                
+                $billDetails[] = [
+                    "label" => "SPP " . $monthName,
+                    "value" => (string)$unpaidForThisMonth
+                ];
+            }
+        }
+
+        $tagihanBulanIni = new \stdClass();
+        $tagihanBulanIni->SPP = (string)$remainingSPP;
+        $tagihanBulanIni->sppPerBulan = (string)$sppPerBulan;
+        $tagihanBulanIni->billDetails = $billDetails;
+        $tagihanBulanIni->ID_TRANSBULAN = ""; // Will be generated on payment
+        $tagihanBulanIni->ID_TA = $idTa;
 
         return [$siswa, $tagihanBulanIni];
     }

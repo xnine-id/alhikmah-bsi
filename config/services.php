@@ -36,6 +36,9 @@ return [
     ],
 
     'bsi' => [
+        'open_biller_id' => env('BSI_OPEN_BILLER_ID'),
+        'close_biller_id' => env('BSI_CLOSE_BILLER_ID'),
+
         'secret_key' => env('BSI_SECRET_KEY'),
         'client_id' => env('BSI_CLIENT_ID'),
         'client_secret' => env('BSI_CLIENT_SECRET'),

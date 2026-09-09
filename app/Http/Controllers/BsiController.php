@@ -10,28 +10,35 @@ use Exception;
 
 class BsiController extends Controller
 {
-    public function __construct(protected BsiInterface $bsiService) {}
-
-    public function auth(Request $request)
+    private function getService(string $type): \App\Services\BsiService
     {
-        Log::info('AUTH Request JSON: ', $request->json()->all() ?: []);
-        Log::info('AUTH Headers: ', $request->headers->all());
+        $billerId = $type === 'open' 
+            ? config('services.bsi.open_biller_id') 
+            : config('services.bsi.close_biller_id');
+            
+        return new \App\Services\BsiService($billerId);
+    }
+
+    private function handleAuth(Request $request, string $type)
+    {
+        Log::info(strtoupper($type) . ' AUTH Request JSON: ', $request->json()->all() ?: []);
+        Log::info(strtoupper($type) . ' AUTH Headers: ', $request->headers->all());
 
         try {
             $signature = $request->header('x-signature') ?? '';
             $clientKey = $request->header('x-client-key') ?? '';
             $timestamp = $request->header('x-timestamp') ?? '';
 
-            $result = $this->bsiService->authenticate($signature, $clientKey, $timestamp);
+            $result = $this->getService($type)->authenticate($signature, $clientKey, $timestamp);
             
-            Log::info("AUTH END RESPONSE :", $result);
+            Log::info(strtoupper($type) . " AUTH END RESPONSE :", $result);
             return response()->json($result, 200);
         } catch (Exception $e) {
             $responseCode = $e->getCode() ?: BsiResponseCode::AUTH_ERROR;
             $responseMessage = $e->getMessage() ?: BsiResponseCode::getMessage($responseCode);
             $output = ["responseCode" => $responseCode, "responseMessage" => $responseMessage];
 
-            Log::info("AUTH END RESPONSE (ERROR):", $output);
+            Log::info(strtoupper($type) . " AUTH END RESPONSE (ERROR):", $output);
             
             $statusCode = substr((string) $responseCode, 0, 3);
             if (!is_numeric($statusCode) || $statusCode < 100 || $statusCode > 599) {
@@ -42,21 +49,21 @@ class BsiController extends Controller
         }
     }
 
-    public function inquiry(Request $request)
+    private function handleInquiry(Request $request, string $type)
     {
-        Log::info('INQUIRY Request JSON: ', $request->json()->all() ?: []);
-        Log::info('INQUIRY Headers: ', $request->headers->all());
+        Log::info(strtoupper($type) . ' INQUIRY Request JSON: ', $request->json()->all() ?: []);
+        Log::info(strtoupper($type) . ' INQUIRY Headers: ', $request->headers->all());
 
         try {
-            $result = $this->bsiService->inquiry($request->headers->all(), $request->json()->all(), $request->getContent());
-            Log::info("INQUIRY END RESPONSE :", $result);
+            $result = $this->getService($type)->inquiry($request->headers->all(), $request->json()->all(), $request->getContent());
+            Log::info(strtoupper($type) . " INQUIRY END RESPONSE :", $result);
             return response()->json($result, 200);
         } catch (Exception $e) {
             $responseCode = $e->getCode() ?: BsiResponseCode::INQUIRY_GENERAL_ERROR;
             $responseMessage = $e->getMessage() ?: BsiResponseCode::getMessage($responseCode);
             $output = ["responseCode" => $responseCode, "responseMessage" => $responseMessage];
 
-            Log::info("INQUIRY END RESPONSE (ERROR):", $output);
+            Log::info(strtoupper($type) . " INQUIRY END RESPONSE (ERROR):", $output);
 
             $statusCode = substr((string) $responseCode, 0, 3);
             if (!is_numeric($statusCode) || $statusCode < 100 || $statusCode > 599) {
@@ -67,20 +74,21 @@ class BsiController extends Controller
         }
     }
 
-    public function payment(Request $request)
+    private function handlePayment(Request $request, string $type)
     {
-        Log::info('PAYMENT Request JSON: ', $request->json()->all() ?: []);
-        Log::info('PAYMENT Headers: ', $request->headers->all());
+        Log::info(strtoupper($type) . ' PAYMENT Request JSON: ', $request->json()->all() ?: []);
+        Log::info(strtoupper($type) . ' PAYMENT Headers: ', $request->headers->all());
 
         try {
-            $result = $this->bsiService->payment($request->headers->all(), $request->json()->all(), $request->getContent());
+            $isClosePayment = $type === 'close';
+            $result = $this->getService($type)->payment($request->headers->all(), $request->json()->all(), $request->getContent(), $isClosePayment);
             return response()->json($result, 200);
         } catch (Exception $e) {
             $responseCode = $e->getCode() ?: BsiResponseCode::PAYMENT_GENERAL_ERROR;
             $responseMessage = $e->getMessage() ?: BsiResponseCode::getMessage($responseCode);
             $output = ["responseCode" => $responseCode, "responseMessage" => $responseMessage];
 
-            Log::info("PAYMENT END RESPONSE (ERROR):", $output);
+            Log::info(strtoupper($type) . " PAYMENT END RESPONSE (ERROR):", $output);
 
             $statusCode = substr((string) $responseCode, 0, 3);
             if (!is_numeric($statusCode) || $statusCode < 100 || $statusCode > 599) {
@@ -89,5 +97,35 @@ class BsiController extends Controller
 
             return response()->json($output, (int) $statusCode);
         }
+    }
+
+    public function authOpen(Request $request)
+    {
+        return $this->handleAuth($request, 'open');
+    }
+
+    public function inquiryOpen(Request $request)
+    {
+        return $this->handleInquiry($request, 'open');
+    }
+
+    public function paymentOpen(Request $request)
+    {
+        return $this->handlePayment($request, 'open');
+    }
+
+    public function authClose(Request $request)
+    {
+        return $this->handleAuth($request, 'close');
+    }
+
+    public function inquiryClose(Request $request)
+    {
+        return $this->handleInquiry($request, 'close');
+    }
+
+    public function paymentClose(Request $request)
+    {
+        return $this->handlePayment($request, 'close');
     }
 }
